@@ -1,4 +1,4 @@
-﻿#include <mpi.h>
+#include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -56,7 +56,7 @@ double rescale(ULLONG N, ULLONG n, double x1, double x2) {
 
 int main(int argc, char* argv[]) {
     int num_tasks, task_id;
-    ULLONG num_points, points_in_circle = 0;
+    ULLONG total_num_points, points_in_circle = 0;
     ULLONG total_points_in_circle;
     double x, y, pi_estimate;
     ULLONG seed;
@@ -76,6 +76,9 @@ int main(int argc, char* argv[]) {
         MPI_Finalize();
         exit(1);
     }
+
+    // The total number of points across all processes
+    total_num_points = atoll(argv[1]);
 
     if (task_id == MASTER) {
         start_time = MPI_Wtime();  // Record program start time
@@ -123,20 +126,18 @@ int main(int argc, char* argv[]) {
         fflush(stdout);
     }
 
-    // Total points for all processes combined
-    num_points = atoll(argv[1]);
-
     // Start time of the parallel part
     s_parallel = MPI_Wtime();
-    printf("Process %d: Starting computation in round-robin with total points %llu.\n", task_id, num_points);
+    printf("Process %d: Starting computation in round-robin with total points %llu.\n", task_id, total_num_points);
     fflush(stdout);
 
-    // Round-robin task distribution with task count tracking
-    ULLONG i_prev;
+    // Each process handles points assigned in a round-robin fashion
+    ULLONG i_prev = seed + task_id; // Initialize i_prev with a unique seed based on task_id
     ULLONG task_count = 0; // Counter to track the number of tasks handled by each process
-    for (ULLONG i = task_id; i < num_points; i += num_tasks) {
-        i_prev = seed + i; // Modify seed for each iteration
+
+    for (ULLONG i = task_id; i < total_num_points; i += num_tasks) {
         ULLONG i_random = modlin(a, i_prev, c, M);
+        i_prev = i_random;
         ULLONG ix = i_random % sidelen;
         ULLONG iy = i_random / sidelen;
         x = rescale(sidelen, ix, -1, 1);
@@ -160,13 +161,13 @@ int main(int argc, char* argv[]) {
         t_total = end_time - start_time;
 
         // Compute and print an estimate of PI
-        pi_estimate = 4.0 * total_points_in_circle / num_points;
+        pi_estimate = 4.0 * total_points_in_circle / total_num_points;
 
         // Compute speedup
         double t_speedup = t_total / (t_serial1 + t_serial2 + (t_parallel / num_tasks));
 
         printf("Estimated value of Pi: %f\n", pi_estimate);
-        printf("Total number of points: %llu\n", num_points);
+        printf("Total number of points: %llu\n", total_num_points);
         printf("Total points in circle: %llu\n", total_points_in_circle);
         printf("Total Execution time (t_total): %f seconds\n", t_total);
         printf("Create seed number time (t_serial1): %f seconds\n", t_serial1);
