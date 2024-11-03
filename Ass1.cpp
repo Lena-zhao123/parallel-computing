@@ -93,7 +93,8 @@ int main(int argc, char* argv[]) {
         JumpConstant jumpConstants[MAX_ENTRIES];
         int count = 0;
         // const char* file_path = "D:\\Code\\c\\Project1\\jumpconstants.dat";
-        const char* file_path = "/home/zxt/assignments/jumpconstants.dat";
+        //const char* file_path = "/home/zxt/assignments/jumpconstants.dat";
+        const char* file_path = "jumpconstants.dat";
         if (readFile(file_path, jumpConstants, &count) != 0) {
             fprintf(stderr, "Error: Could not read the file properly.\n");
             MPI_Abort(MPI_COMM_WORLD, 1);
