@@ -156,6 +156,10 @@ int main(int argc, char* argv[]) {
     // Collect the results of each process into the main process
     MPI_Reduce(&points_in_circle, &total_points_in_circle, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MASTER, MPI_COMM_WORLD);
 
+    // Collect task counts to verify total distribution
+    ULLONG total_task_count = 0;
+    MPI_Reduce(&task_count, &total_task_count, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MASTER, MPI_COMM_WORLD);
+
     if (task_id == MASTER) {
         end_time = MPI_Wtime();  // Record the end time of the program
         t_total = end_time - start_time;
@@ -169,11 +173,17 @@ int main(int argc, char* argv[]) {
         printf("Estimated value of Pi: %f\n", pi_estimate);
         printf("Total number of points: %llu\n", total_num_points);
         printf("Total points in circle: %llu\n", total_points_in_circle);
+        printf("Total tasks handled by all processes: %llu\n", total_task_count);
         printf("Total Execution time (t_total): %f seconds\n", t_total);
         printf("Create seed number time (t_serial1): %f seconds\n", t_serial1);
         printf("Master Send-Recv Communication time (t_serial2): %f seconds\n", t_serial2);
         printf("Parallel time (t_parallel): %f seconds\n", t_parallel);
         printf("Speedup Time (t_speedup): %f\n", t_speedup);
+
+        // Verify if the total tasks handled matches the expected total_num_points
+        if (total_task_count != total_num_points) {
+            fprintf(stderr, "Error: Total tasks handled (%llu) does not match expected total number of points (%llu)\n", total_task_count, total_num_points);
+        }
     }
 
     MPI_Finalize();
