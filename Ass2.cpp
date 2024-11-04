@@ -4,56 +4,32 @@
 #include <math.h>
 #include <algorithm>
 #include <vector>
+#include <numeric> // for std::accumulate
 
-// Comparison function, used for sorting with qsort
-int compare(const void* x1, const void* x2) {
-    const float* f1 = (const float*)x1;
-    const float* f2 = (const float*)x2;
-    return (*f1 > *f2) - (*f1 < *f2);
-}
-
-// Check if the data is sorted and calculate the sum of the data
-void check(float* data, int nitems) {
-    double sum = 0;
-    int sorted = 1;
-    for (int i = 0; i < nitems; i++) {
-        sum += data[i];
-        if (i && data[i] < data[i - 1]) sorted = 0;
-    }
-    printf("sum=%f, sorted=%d\n", sum, sorted);
-}
-
+// Assignment 2 bucket
 int main(int argc, char* argv[]) {
     int rank, size, nitems = 20;
     const float xmin = 0.0, xmax = 1000.0;
 
     // Initialize the MPI environment
     MPI_Init(&argc, &argv);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Get the rank of the current process
-    MPI_Comm_size(MPI_COMM_WORLD, &size); // Get the total number of processes
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank); 
+    MPI_Comm_size(MPI_COMM_WORLD, &size); 
 
     // If the command line argument provides the number of items, it is used.
     if (argc == 2) {
         nitems = atoi(argv[1]);
     }
 
-    // Record the time of each stage
-    double start_time, init_time, scatter_time, local_sort_time, gather_time, total_time;
-
-    // Start total time recording
-    start_time = MPI_Wtime();
-
     // Initialize data allocation and offsets
-    std::vector<int> send_counts(size, nitems / size); // Initialize the number of elements allocated to each process
-    std::vector<int> displs(size, 0); // Initialize the starting offset of each process
-    int remainder = nitems % size; // Calculate the remainder, making sure all data is allocated
+    std::vector<int> send_counts(size, nitems / size); 
+    std::vector<int> displs(size, 0);
+    int remainder = nitems % size;
 
-    // Distribute the remaining elements to the first `remainder` processes
     for (int i = 0; i < remainder; i++) {
         send_counts[i]++;
     }
 
-    // Calculate the starting offset of each process
     for (int i = 1; i < size; i++) {
         displs[i] = displs[i - 1] + send_counts[i - 1];
     }
@@ -65,94 +41,75 @@ int main(int argc, char* argv[]) {
         for (int i = 0; i < nitems; i++) {
             data[i] = (float)rand() / RAND_MAX * (xmax - xmin) + xmin; // Generate random numbers
         }
-        check(data, nitems); // Output data sum and sorting status
     }
 
-    // Record the time of the initialization phase
-    init_time = MPI_Wtime() - start_time;
-
-    // Allocate a local array for each process to store received data
     float* local_data = (float*)malloc(send_counts[rank] * sizeof(float));
 
-    // Record the start time of the Scatterv phase
-    double scatter_start = MPI_Wtime();
-
-    // Use MPI_Scatterv to distribute data to each process on demand
+    // Scatter data to each process
     MPI_Scatterv(data, send_counts.data(), displs.data(), MPI_FLOAT, local_data, send_counts[rank], MPI_FLOAT, 0, MPI_COMM_WORLD);
 
-    // Record the time of the Scatterv stage
-    scatter_time = MPI_Wtime() - scatter_start;
-
-    // Output the data received by each process
-    printf("Process %d received data: ", rank);
+    // Divide local data into buckets for each process based on data range
+    std::vector<std::vector<float>> buckets(size);
     for (int i = 0; i < send_counts[rank]; i++) {
-        printf("%f ", local_data[i]);
+        int bucket_idx = (local_data[i] - xmin) / (xmax - xmin) * size;
+        bucket_idx = std::min(bucket_idx, size - 1);  // Ensure the index is within bounds
+        buckets[bucket_idx].push_back(local_data[i]);
     }
-    printf("\n");
 
-    // Record the start time of local sorting
-    double local_sort_start = MPI_Wtime();
+    // Prepare data for MPI_Alltoallv
+    std::vector<int> send_counts_alltoall(size, 0);
+    std::vector<int> send_displs_alltoall(size, 0);
+    std::vector<float> send_buffer;
 
-    // Sort each process's local data
-    std::sort(local_data, local_data + send_counts[rank], std::less<float>());
+    for (int i = 0; i < size; i++) {
+        send_counts_alltoall[i] = buckets[i].size();
+        send_displs_alltoall[i] = send_buffer.size();
+        send_buffer.insert(send_buffer.end(), buckets[i].begin(), buckets[i].end());
+    }
 
-    // Record the time of local sorting
-    local_sort_time = MPI_Wtime() - local_sort_start;
+    // Determine receive counts and displacements
+    std::vector<int> recv_counts_alltoall(size);
+    MPI_Alltoall(send_counts_alltoall.data(), 1, MPI_INT, recv_counts_alltoall.data(), 1, MPI_INT, MPI_COMM_WORLD);
 
-    // Array prepared by the root process to collect all data
+    int total_recv_count = std::accumulate(recv_counts_alltoall.begin(), recv_counts_alltoall.end(), 0);
+    std::vector<float> recv_buffer(total_recv_count);
+    std::vector<int> recv_displs_alltoall(size, 0);
+    for (int i = 1; i < size; i++) {
+        recv_displs_alltoall[i] = recv_displs_alltoall[i - 1] + recv_counts_alltoall[i - 1];
+    }
+
+    // Use MPI_Alltoallv to exchange data
+    MPI_Alltoallv(send_buffer.data(), send_counts_alltoall.data(), send_displs_alltoall.data(), MPI_FLOAT,
+                  recv_buffer.data(), recv_counts_alltoall.data(), recv_displs_alltoall.data(), MPI_FLOAT, MPI_COMM_WORLD);
+
+    // Sort received data in the large bucket (each process's final sorted data)
+    std::sort(recv_buffer.begin(), recv_buffer.end());
+
+    // Gather the sorted data back to the master process
     float* gathered_data = NULL;
     if (rank == 0) {
         gathered_data = (float*)malloc(nitems * sizeof(float));
     }
+    MPI_Gatherv(recv_buffer.data(), recv_buffer.size(), MPI_FLOAT, gathered_data, send_counts.data(), displs.data(), MPI_FLOAT, 0, MPI_COMM_WORLD);
 
-    // Record the start time of the Gather phase
-    double gather_start = MPI_Wtime();
-
-    // Use MPI_Gatherv to gather data from each process to the root process
-    MPI_Gatherv(local_data, send_counts[rank], MPI_FLOAT, gathered_data, send_counts.data(), displs.data(), MPI_FLOAT, 0, MPI_COMM_WORLD);
-
-    // Record the time of the Gather phase
-    gather_time = MPI_Wtime() - gather_start;
-
-    // The root process globally sorts the collected data and outputs it
     if (rank == 0) {
-        // Sort the collected data
-        std::sort(gathered_data, gathered_data + nitems);  // Sort only actual data
-        printf("Sorted data after gather:\n");
+        // Optionally, sort the final gathered data
+        std::sort(gathered_data, gathered_data + nitems);
+        
+        // Print final sorted result (for verification purposes)
+        printf("Sorted data:\n");
         for (int i = 0; i < nitems; i++) {
             printf("%f ", gathered_data[i]);
         }
         printf("\n");
 
-        // Free the collection array of the root process
+        // Free the gathered data buffer on the root process
         free(gathered_data); 
     }
 
-    // Total recording time
-    total_time = MPI_Wtime() - start_time;
-
-    // The root process calculates and outputs the speedup ratio
-    if (rank == 0) {
-        // Calculate the proportion alpha of the serial part
-        double alpha = (init_time + gather_time) / total_time;
-        
-        //Calculate speedup using Gustafson's Law
-        double speedup = size - alpha * (size - 1);
-
-        // Output timing statistics and speedup
-        printf("\nTime taken for each phase:\n");
-        printf("Initialization Time: %f seconds\n", init_time);
-        printf("Scatter Time: %f seconds\n", scatter_time);
-        printf("Local Sort Time: %f seconds\n", local_sort_time);
-        printf("Gather Time: %f seconds\n", gather_time);
-        printf("Total Execution Time: %f seconds\n", total_time);
-        printf("Calculated Speedup (Gustafson's Law): %f\n", speedup);
-    }
-
-    // Freeing allocated memory
     free(data);
     free(local_data);
-    // End the MPI environment
+    
     MPI_Finalize();
     return 0;
 }
